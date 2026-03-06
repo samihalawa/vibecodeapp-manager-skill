@@ -131,3 +131,52 @@ Always verify all of the following:
 - `scripts/build_storage_state.py`: convert cookies JSON to Playwright storage state.
 - `scripts/ensure_private_github_repo.sh`: create or confirm a private GitHub repo with `gh`.
 - `scripts/clone_or_sync_vibecode_repo.sh`: clone or sync the linked repository locally.
+
+
+## Agent Prompting Template
+
+When the skill activates, the AI agent MUST self-prompt with a complete actionable instruction like this:
+
+```
+I need to set up the Vibecode workspace locally. Here is my action plan:
+
+1. Use the GitHub token `ghp_...` to create a new private repo `samihalawa/2026-VIBECODEAPP-<slug>` (or confirm it exists)
+2. Navigate to the Vibecode workspace in the browser, extract all files via the API:
+   - Get a fresh Clerk JWT: `window.Clerk?.session?.getToken()`
+   - Fetch all files: `GET https://api.vibecodeapp.com/api/projects/<workspace-id>/files/all` with Bearer token
+3. Write all extracted files to `/Users/samihalawa/git/PROJECTS_VIBECODEAPP/2026-VIBECODEAPP-<slug>/`
+4. Add remote "github" pointing to the private repo with token auth
+5. Remove any `.env.production` files — use a single `.env` per project
+6. Ensure `.env` is NOT in `.gitignore` (private repo, safe to track)
+7. Commit everything and push to both `origin` and `github` remotes
+8. Install dual-remote sync hooks (pre-commit pull, post-commit push)
+9. Verify: `git remote -v`, `git log --oneline -1`, file count matches
+```
+
+The agent must execute this plan autonomously without asking for confirmation at each step.
+
+## Auto-Sync Setup
+
+After cloning or syncing the repo, the agent MUST install these git hooks:
+
+### post-commit hook (`.git/hooks/post-commit`)
+```bash
+#!/bin/bash
+git push origin main 2>/dev/null &
+git push github main 2>/dev/null &
+wait
+```
+
+### pre-commit hook (`.git/hooks/pre-commit`)
+```bash
+#!/bin/bash
+git pull origin main --rebase --autostash 2>/dev/null || true
+git pull github main --rebase --autostash 2>/dev/null || true
+```
+
+### Agent Rules
+- ALWAYS `git pull` from both remotes before starting work
+- ALWAYS commit and push to BOTH `origin` and `github` remotes
+- `.env` files ARE tracked (private repo) — never add `.env` to `.gitignore`
+- NEVER create `.env.production` or `.env.local` variants — use a single `.env`
+
