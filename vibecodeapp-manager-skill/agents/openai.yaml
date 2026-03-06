@@ -1,0 +1,4 @@
+interface:
+  display_name: "VibecodeApp Manager Skill"
+  short_description: "Drive Vibecode workspaces into GitHub and local clones"
+  default_prompt: "Use $vibecodeapp-manager-skill to link this Vibecode workspace to GitHub and sync it into /Users/samihalawa/git/PROJECTS_VIBECODEAPP."
