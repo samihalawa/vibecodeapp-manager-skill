@@ -180,3 +180,243 @@ git pull github main --rebase --autostash 2>/dev/null || true
 - `.env` files ARE tracked (private repo) — never add `.env` to `.gitignore`
 - NEVER create `.env.production` or `.env.local` variants — use a single `.env`
 
+---
+
+## SSH Backend Access
+
+Every Vibecode workspace runs inside a container that exposes SSH on port **2222**. This gives direct terminal access to the running backend, its filesystem, and process management — critical for debugging, deploying code changes, and testing endpoints locally inside the container.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Vibecode Platform                          │
+│                                                              │
+│  ┌──────────────────┐       ┌──────────────────────────┐    │
+│  │   Frontend (Expo) │       │  Backend Container        │    │
+│  │   React Native    │──────▶│  Hono + Bun (port 3000)  │    │
+│  │   Mobile App      │ HTTPS │  MySQL (external DB)      │    │
+│  │   (port 8081)     │       │  SSH on port 2222         │    │
+│  └──────────────────┘       └──────────────────────────┘    │
+│           │                          │                       │
+│           ▼                          ▼                       │
+│  https://<slug>.vibecode.run   SSH: <workspace-id>          │
+│  (reverse proxy to 3000)       .vibecodeapp.io:2222         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**How it works:**
+
+- The **frontend** is an Expo React Native app that runs on port 8081. Users interact with it through the Vibecode mobile preview or a web browser.
+- The **backend** is a Hono API server running on Bun with `--hot` reload, listening on port 3000 inside the container. It's exposed publicly via `https://<slug>.vibecode.run`.
+- The **database** is an external MySQL server (not inside the container). Connection details are in `.env`.
+- **SSH** gives you a shell inside the backend container. The workspace code lives at `/home/user/workspace`. This is the same code served by the running Bun process.
+- When you `git pull` inside SSH, the Bun `--hot` flag auto-reloads changed files. If hot reload fails, kill the process and the supervisor (`runsv`) restarts it automatically.
+
+### SSH Connection Details
+
+Each workspace has a unique SSH endpoint. The format is:
+
+```
+Host:     <workspace-uuid>.vibecodeapp.io
+Port:     2222
+User:     vibecode
+Password: <shown in workspace connection panel>
+```
+
+**Example (current project):**
+
+```bash
+# Basic SSH connection
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io
+
+# Run a single command remotely
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  "cd /home/user/workspace && git log --oneline -3"
+```
+
+> **Note:** `sshpass` is required because the SSH server uses password auth. Install with `brew install sshpass` on macOS (may need `brew install hudochenkov/sshpass/sshpass`).
+
+### Key Filesystem Paths (Inside Container)
+
+| Path | Description |
+|------|-------------|
+| `/home/user/workspace` | Project root (git repo) |
+| `/home/user/workspace/backend/src/` | Backend source code |
+| `/home/user/workspace/mobile/src/` | Mobile app source code |
+| `/home/user/workspace/backend/src/index.ts` | Main entry — all route mounts |
+| `/home/user/workspace/backend/src/routes/` | Individual route files |
+| `/home/user/workspace/.env` | Environment variables |
+
+### Common SSH Operations
+
+#### Deploy code changes (git pull + restart)
+
+```bash
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  "cd /home/user/workspace && git pull origin main"
+```
+
+#### Force restart the backend (when hot reload isn't enough)
+
+```bash
+# Use kill with specific PID (pkill can kill the SSH session itself)
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  'kill $(pgrep -f "bun.*--hot" | head -1) 2>/dev/null; echo "restart triggered"'
+```
+
+> **WARNING:** Do NOT use `pkill -f "bun.*--hot"` — this can kill the SSH session's parent process. Use `kill` with a specific PID from `pgrep` instead.
+
+#### Check which routes are registered
+
+```bash
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  "cd /home/user/workspace/backend && grep 'app.route\|app.get\|app.post' src/index.ts"
+```
+
+#### Test an endpoint locally inside the container (with session cookie)
+
+```bash
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  'curl -s -b "app_session_id=SESSION_TOKEN_HERE" http://localhost:3000/api/alerts'
+```
+
+#### Check server health
+
+```bash
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  "curl -s http://localhost:3000/health"
+```
+
+#### View backend logs (find the running process)
+
+```bash
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  "ps aux | grep bun"
+```
+
+#### Full deploy cycle (pull + restart + verify)
+
+```bash
+# Step 1: Pull
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  "cd /home/user/workspace && git pull origin main"
+
+# Step 2: Restart
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  'kill $(pgrep -f "bun.*--hot" | head -1) 2>/dev/null; echo done'
+
+# Step 3: Wait and verify (separate SSH session after restart)
+sleep 4
+sshpass -p "imprudent-unwilling-footboard-vexingly-overdue" \
+  ssh -o StrictHostKeyChecking=no -p 2222 \
+  vibecode@019caa15-04a4-73df-ac06-01e91c059a63.vibecodeapp.io \
+  "curl -s http://localhost:3000/health"
+```
+
+### Testing Endpoints From Outside (via public URL)
+
+The backend is also accessible at the public URL. Cookie-based auth works when testing from inside the container with `-b` flag, but from outside you may need to pass the token as a query param `?token=...` as a fallback:
+
+```bash
+# From outside — public URL
+curl -s -b "app_session_id=SESSION_TOKEN" https://exact-rye.vibecode.run/api/alerts
+
+# From inside container — localhost
+curl -s -b "app_session_id=SESSION_TOKEN" http://localhost:3000/api/alerts
+```
+
+### Route Mount Points (from index.ts)
+
+The backend mounts routes in `index.ts`. The mount path is NOT always obvious from the filename:
+
+| File | Mount Path | Note |
+|------|-----------|------|
+| `job-applications.ts` | `/api/jobs` | NOT `/api/job-applications` |
+| `listings-extra.ts` | `/api/listings` | Shared with listings-quota |
+| `listings-quota.ts` | `/api/listings` | Shared with listings-extra |
+| `listing-analytics.ts` | `/api/listing-analytics` | |
+| `smart-messaging.ts` | `/api/smart-messaging` | |
+| `forum.ts` | `/api/forum` | |
+| `chat.ts` | `/api/chat` | |
+| `credits.ts` | `/api/credits` | |
+| `referrals.ts` | `/api/referrals` | |
+| `reviews.ts` | `/api/reviews` | |
+| `verification.ts` | `/api/verification` | |
+| `coupons.ts` | `/api/coupons` | |
+| `ads.ts` | `/api/ads` | |
+| `alerts.ts` | `/api/alerts` | |
+| `notifications.ts` | `/api/notifications` | |
+| `cv.ts` | `/api/cv` | |
+| Health endpoint | `/health` | NOT `/api/health` |
+
+**Always `grep 'app.route' src/index.ts`** inside the container to confirm current mounts.
+
+### Cookie-Based Session Auth Pattern
+
+All authenticated endpoints use this pattern (cookie `app_session_id` → MySQL `session` table → `userId`):
+
+```typescript
+function parseSessionCookie(cookieHeader: string | undefined): string | null {
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/(?:^|;\s*)app_session_id=([^;]+)/);
+  return match?.[1] ?? null;
+}
+
+async function authenticateRequest(
+  db: mysql.Pool,
+  cookieHeader: string | undefined,
+  queryToken: string | undefined
+): Promise<number | null> {
+  const token = parseSessionCookie(cookieHeader) || queryToken;
+  if (!token) return null;
+  const [rows] = await db.query<mysql.RowDataPacket[]>(
+    `SELECT * FROM session WHERE token = ? AND expiresAt > NOW()`,
+    [token]
+  );
+  const session = (rows as any[])[0];
+  if (!session) return null;
+  return session.userId;
+}
+```
+
+Usage in every endpoint:
+```typescript
+const db = getPool();
+const userId = await authenticateRequest(db, c.req.header("cookie"), c.req.query("token"));
+if (!userId) {
+  return c.json({ error: { message: "Not authenticated", code: "UNAUTHENTICATED" } }, 401);
+}
+```
+
+### Gotchas & Lessons Learned
+
+1. **`pkill` kills SSH**: Never use `pkill -f "bun.*--hot"` — it matches the SSH session too. Use `kill $(pgrep -f "bun.*--hot" | head -1)` instead.
+2. **Workspace path**: The code lives at `/home/user/workspace`, NOT `/app/backend` or `/home/vibecode/app`. Always verify with `find / -name '.git' -type d 2>/dev/null`.
+3. **Health endpoint**: It's at `/health`, not `/api/health`.
+4. **Job applications route**: Mounted at `/api/jobs`, not `/api/job-applications`.
+5. **Hot reload**: Bun `--hot` picks up most changes automatically after `git pull`. Kill + restart only when hot reload fails.
+6. **runsv supervisor**: When the bun process dies, `runsv` restarts it automatically within a few seconds. No need to manually start it.
+7. **Cookie testing from outside**: The `-b` flag in curl sends cookies correctly to the public HTTPS URL. For curl inside the container, use `http://localhost:3000`.
+8. **Database is external**: MySQL runs on `104.196.210.42:3306`, not inside the container. Connection string is in `.env`.
+
